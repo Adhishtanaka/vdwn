@@ -1,6 +1,6 @@
 {
   "name": "vdwn",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Interactive CLI for downloading videos/audio from YouTube and other sources with auto dependency install.",
   "main": "index.js",
   "bin": {
