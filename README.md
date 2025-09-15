@@ -20,7 +20,7 @@
 Install globally from your project directory:
 
 ```bash
-npm i vdwn .
+npm install -g vdwn
 ```
 
 ## Usage
