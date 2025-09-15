@@ -1,14 +1,11 @@
 #!/usr/bin/env node
 
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const { existsSync, mkdirSync } = require('fs');
 const { join } = require('path');
 const inquirer = require('inquirer');
-const { exec } = require('child_process');
 const cliProgress = require('cli-progress');
 const colors = require('ansi-colors');
-
-const { spawn, exec } = require('child_process');
 const execAsync = require('util').promisify(exec);
 
 async function main() {
