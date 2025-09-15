@@ -21,8 +21,8 @@ async function main() {
             }
         ]);
 
-        // If YouTube, ask for download type and quality
-        if (validateUrl(url) === 0) {
+    // If YouTube, ask for download type and quality
+    if (isYouTube(url)) {
             const ytAnswers = await inquirer.prompt([
                 {
                     type: 'list',
