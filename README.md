@@ -2,6 +2,8 @@
 
 **vdwn** is a simple yet powerful interactive CLI tool for downloading videos and audio from YouTube and other supported sources. It handles installation of required dependencies automatically and offers a smooth, user-friendly experience.
 
+ <img src="gif/ss.gif" alt="Demo" height="300" />
+
 ## Features
 
 * Download full videos or audio-only tracks from YouTube and other URLs
