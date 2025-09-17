@@ -8,10 +8,12 @@ const cliProgress = require('cli-progress');
 const colors = require('ansi-colors');
 const execAsync = require('util').promisify(exec);
 
-async function main() {
-    try {
+async function main()
+{
+    try
+    {
         await ensureDependencies();
-        // Prompt for URL first
+
         const { url } = await inquirer.prompt([
             {
                 type: 'input',
@@ -21,8 +23,9 @@ async function main() {
             }
         ]);
 
-    // If YouTube, ask for download type and quality
-    if (isYouTube(url)) {
+        if (isYouTube(url))
+        {
+
             const ytAnswers = await inquirer.prompt([
                 {
                     type: 'list',
@@ -46,8 +49,8 @@ async function main() {
             ]);
             ensureOutputDirectory(ytAnswers.output);
             await downloadY({ url, ...ytAnswers });
-        } else {
-            // For non-YouTube, just ask for output dir
+        } else
+        {
             const { output } = await inquirer.prompt([
                 {
                     type: 'input',
@@ -61,91 +64,149 @@ async function main() {
         }
 
         console.log('\nDownload completed successfully!');
-    } catch (error) {
+    } catch (error)
+    {
         console.error('Error:', error.message);
         process.exit(1);
     }
 }
 
-async function ensureDependencies() {
-  const deps = [
-    { name: 'ffmpeg', versionCmd: '-version' },
-    { name: 'yt-dlp', versionCmd: '--version' }
-  ];
-  const missing = [];
-  await Promise.all(deps.map(async dep => {
-    try { await execAsync(`${dep.name} ${dep.versionCmd}`); }
-    catch { missing.push(dep.name); }
-  }));
-  if (missing.length) await installDependencies(missing);
+async function ensureDependencies()
+{
+    const deps = [
+        { name: 'ffmpeg', versionCmd: '-version' },
+        { name: 'yt-dlp', versionCmd: '--version' }
+    ];
+    const missing = [];
+    await Promise.all(deps.map(async dep =>
+    {
+        try { await execAsync(`${dep.name} ${dep.versionCmd}`); }
+        catch { missing.push(dep.name); }
+    }));
+    if (missing.length) await installDependencies(missing);
 }
 
-async function installDependencies(missingDeps) {
+async function installDependencies(missingDeps)
+{
     console.log('Missing dependencies:', missingDeps.join(', '));
     const platform = process.platform;
-    if (platform === 'win32') {
-        await installWithScoop(missingDeps);
-    } else if (platform === 'darwin') {
+    if (platform === 'win32')
+    {
+        await installWithWindows(missingDeps);
+    } else if (platform === 'darwin')
+    {
         await installWithBrew(missingDeps);
-    } else if (platform === 'linux') {
+    } else if (platform === 'linux')
+    {
         await installWithApt(missingDeps);
-    } else {
+    } else
+    {
         throw new Error('Unsupported operating system');
     }
 }
 
-async function installWithBrew(deps) {
-    try {
+async function installWithBrew(deps)
+{
+    try
+    {
         await execAsync('brew --version');
-    } catch {
+    } catch
+    {
         throw new Error('Homebrew is not installed. Please install Homebrew first: https://brew.sh/');
     }
-    for (const dep of deps) {
+    for (const dep of deps)
+    {
         console.log(`Installing ${dep} via Homebrew...`);
         await execAsync(`brew install ${dep}`);
     }
 }
 
-async function installWithApt(deps) {
-    try {
+async function installWithApt(deps)
+{
+    try
+    {
         await execAsync('apt --version');
-    } catch {
+    } catch
+    {
         throw new Error('apt is not available. Please install dependencies manually.');
     }
-    for (const dep of deps) {
+    for (const dep of deps)
+    {
         console.log(`Installing ${dep} via apt...`);
-        // Use sudo if not root
         const prefix = process.getuid && process.getuid() !== 0 ? 'sudo ' : '';
         await execAsync(`${prefix}apt-get update`);
         await execAsync(`${prefix}apt-get install -y ${dep}`);
     }
 }
 
-async function installWithScoop(deps) {
-    try {
-        await execAsync('scoop --version');
-    } catch {
-        console.log('Installing Scoop...');
-        const psCommand = 'Set-ExecutionPolicy RemoteSigned -scope CurrentUser; iwr -useb get.scoop.sh | iex';
-        await execAsync(`powershell -Command "${psCommand}"`);
+async function installWithWindows(deps)
+{
+    console.log('\n=== Windows Installation (using Winget) ===');
+    
+    try
+    {
+        await execAsync('winget --version');
+        console.log('Winget found! Installing dependencies...');
+        await installWithWinget(deps);
+    } catch
+    {
+        throw new Error('Winget is not available. Please ensure you are running Windows 10 (version 1709 or later) or Windows 11. You can also install winget manually from the Microsoft Store (App Installer).');
     }
+}
 
-    for (const dep of deps) {
-        console.log(`Installing ${dep} via Scoop...`);
-        await execAsync(`scoop install ${dep}`);
+
+
+async function installWithWinget(deps)
+{
+    const wingetMap = {
+        'ffmpeg': 'Gyan.FFmpeg',
+        'yt-dlp': 'yt-dlp.yt-dlp'
+    };
+    
+    for (const dep of deps)
+    {
+        const packageName = wingetMap[dep];
+        if (!packageName)
+        {
+            throw new Error(`No winget package mapping found for ${dep}`);
+        }
+        
+        console.log(`Installing ${dep} (${packageName}) via Winget...`);
+        try
+        {
+            await execAsync(`winget install --id ${packageName} --accept-source-agreements --accept-package-agreements --silent`, { timeout: 600000 });
+            console.log(`✓ ${dep} installed successfully!`);
+        } catch (error)
+        {
+            console.log(`Retrying ${dep} installation with different parameters...`);
+            try
+            {
+                await execAsync(`winget install ${packageName} -e --accept-source-agreements --accept-package-agreements`, { timeout: 600000 });
+                console.log(`✓ ${dep} installed successfully on retry!`);
+            } catch (retryError)
+            {
+                throw new Error(`Failed to install ${dep} with Winget. Error: ${retryError.message}\n\nYou can try installing manually with: winget install ${packageName}`);
+            }
+        }
     }
+    
+    console.log('\n✓ All dependencies installed successfully!');
+    console.log('Note: You may need to restart your terminal for the PATH changes to take effect.');
 }
 
 const isYouTube = url => /youtube\.com|youtu\.be|m\.youtube\.com/.test(url);
 
-function ensureOutputDirectory(dir) {
-    if (!existsSync(dir)) {
+function ensureOutputDirectory(dir)
+{
+    if (!existsSync(dir))
+    {
         mkdirSync(dir, { recursive: true });
         console.log(`Created output directory: ${dir}`);
     }
 }
 
-function getFormatSelector(answers) {
+function getFormatSelector(answers)
+{
     if (answers.downloadType === 'audio-only') return 'bestaudio/best';
 
     const qualityMap = {
@@ -153,29 +214,32 @@ function getFormatSelector(answers) {
         '1080p': 'bestvideo[height<=1080]+bestaudio/best[ext=mp4]',
         '720p': 'bestvideo[height<=720]+bestaudio/best[ext=mp4]',
         'best': 'best[ext=mp4]'
-    };    
+    };
 
     return qualityMap[answers.quality];
 }
 
-async function downloadO(answers) {
-    // Build output filename from URL or use a default
+async function downloadO(answers)
+{
     const url = answers.url;
     const outputDir = answers.output;
     const urlObj = new URL(url);
     let filename = urlObj.pathname.split('/').pop() || 'output';
     filename = filename.split('?')[0];
-    if (!filename.match(/\.(mp4|mkv|webm|mp3|mov|avi)$/i)) {
+    if (!filename.match(/\.(mp4|mkv|webm|mp3|mov|avi)$/i))
+    {
         filename += (answers.downloadType && answers.downloadType === 'audio-only') ? '.mp3' : '.mp4';
     }
     const outputPath = join(outputDir, filename);
 
-    // Get duration first (ffprobe)
-    const getDuration = async () => {
-        try {
+    const getDuration = async () =>
+    {
+        try
+        {
             const { stdout } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${url}"`);
             return parseFloat(stdout.trim());
-        } catch {
+        } catch
+        {
             return null;
         }
     };
@@ -190,7 +254,8 @@ async function downloadO(answers) {
 
     console.log(`\nStarting ffmpeg download to ${outputPath} ...\n`);
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) =>
+    {
         let started = false;
         let lastPercent = 0;
         progressBar.start(100, 0, {
@@ -207,19 +272,20 @@ async function downloadO(answers) {
             outputPath
         ]);
 
-        ffmpeg.stderr.on('data', data => {
+        ffmpeg.stderr.on('data', data =>
+        {
             const str = data.toString();
-            // Parse time= from ffmpeg output
             const timeMatch = str.match(/time=([\d:.]+)/);
-            if (timeMatch && totalDuration) {
-                // Convert time to seconds
+            if (timeMatch && totalDuration)
+            {
                 const t = timeMatch[1].split(':').reverse();
                 let seconds = 0;
                 if (t.length === 3) seconds = (+t[2]) * 3600 + (+t[1]) * 60 + (+t[0]);
                 else if (t.length === 2) seconds = (+t[1]) * 60 + (+t[0]);
                 else seconds = +t[0];
                 const percent = Math.min(100, Math.round((seconds / totalDuration) * 100));
-                if (percent !== lastPercent) {
+                if (percent !== lastPercent)
+                {
                     lastPercent = percent;
                     progressBar.update(percent, {
                         currentTime: seconds.toFixed(1),
@@ -229,7 +295,8 @@ async function downloadO(answers) {
             }
         });
 
-        ffmpeg.on('close', code => {
+        ffmpeg.on('close', code =>
+        {
             progressBar.update(100, {
                 currentTime: totalDuration ? totalDuration.toFixed(1) : '?',
                 totalTime: totalDuration ? totalDuration.toFixed(1) : '?'
@@ -238,14 +305,16 @@ async function downloadO(answers) {
             if (code === 0) resolve();
             else reject(new Error(`ffmpeg exited with code ${code}`));
         });
-        ffmpeg.on('error', err => {
+        ffmpeg.on('error', err =>
+        {
             progressBar.stop();
             reject(err);
         });
     });
 }
 
-async function downloadY(answers) {
+async function downloadY(answers)
+{
     const formatSelector = getFormatSelector(answers);
     const outputTemplate = join(answers.output, '%(title)s.%(ext)s');
 
@@ -264,13 +333,15 @@ async function downloadY(answers) {
         answers.url
     ];
 
-    if (answers.downloadType === 'audio-only') {
+    if (answers.downloadType === 'audio-only')
+    {
         args.push('--extract-audio', '--audio-format', 'mp3');
     }
 
     console.log(`\nStarting download (${answers.downloadType === 'audio-only' ? 'audio only' : answers.quality})...\n`);
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) =>
+    {
         const ytdlp = spawn('yt-dlp', args);
         let totalStreams = 1;
         let currentStream = 0;
@@ -280,24 +351,27 @@ async function downloadY(answers) {
         let buffer = '';
         let lastProgress = -1;
 
-        ytdlp.stdout.on('data', data => {
+        ytdlp.stdout.on('data', data =>
+        {
             buffer += data.toString();
             const lines = buffer.split('\n');
-            buffer = lines.pop(); // Keep incomplete line in buffer
-            
-            for (const line of lines) {
+            buffer = lines.pop(); 
+
+            for (const line of lines)
+            {
                 if (!line.trim()) continue;
 
-                // Detect number of formats being downloaded
-                if (line.includes('Downloading') && line.includes('format(s)')) {
+                if (line.includes('Downloading') && line.includes('format(s)'))
+                {
                     const formatMatch = line.match(/Downloading\s+(\d+)\s+format/);
-                    if (formatMatch) {
+                    if (formatMatch)
+                    {
                         totalStreams = parseInt(formatMatch[1]);
                     }
                 }
 
-                // Start progress bar on first download line
-                if (line.includes('[download]') && line.includes('%') && !progressStarted) {
+                if (line.includes('[download]') && line.includes('%') && !progressStarted)
+                {
                     progressBar.start(100, 0, {
                         status: 'Downloading...',
                         speed: '0KB/s',
@@ -307,20 +381,20 @@ async function downloadY(answers) {
                     isDownloading = true;
                 }
 
-                // Parse download progress - only update if progress changed
-                if (line.includes('[download]') && line.includes('%')) {
+                if (line.includes('[download]') && line.includes('%'))
+                {
                     const progressMatch = line.match(/\[download\]\s+([0-9.]+)%\s+of\s+([0-9.]+)MiB\s+at\s+([0-9.]+(?:\.[0-9]+)?(?:KiB|MiB))\/s(?:\s+ETA\s+([0-9:]+))?/);
-                    
-                    if (progressMatch) {
+
+                    if (progressMatch)
+                    {
                         const percent = parseFloat(progressMatch[1]);
                         const speed = progressMatch[3];
                         const eta = progressMatch[4] || 'Unknown';
-                        
-                        // Adjust progress for multiple streams
+
                         const adjustedProgress = Math.round((currentStream * 100 + percent) / totalStreams);
-                        
-                        // Only update if progress actually changed
-                        if (adjustedProgress !== lastProgress) {
+
+                        if (adjustedProgress !== lastProgress)
+                        {
                             lastProgress = adjustedProgress;
                             progressBar.update(adjustedProgress, {
                                 status: totalStreams > 1 ? `Stream ${currentStream + 1}/${totalStreams}` : 'Downloading',
@@ -331,15 +405,16 @@ async function downloadY(answers) {
                     }
                 }
 
-                // Detect when a stream completes
-                if (line.includes('[download] 100%') || (line.includes('100% of') && line.includes('MiB in'))) {
-                    if (currentStream < totalStreams - 1) {
+                if (line.includes('[download] 100%') || (line.includes('100% of') && line.includes('MiB in')))
+                {
+                    if (currentStream < totalStreams - 1)
+                    {
                         currentStream++;
                     }
                 }
 
-                // Detect merging phase
-                if (line.includes('[Merger]') || line.includes('Merging formats')) {
+                if (line.includes('[Merger]') || line.includes('Merging formats'))
+                {
                     progressBar.update(95, {
                         status: 'Merging streams...',
                         speed: '',
@@ -347,8 +422,8 @@ async function downloadY(answers) {
                     });
                 }
 
-                // Detect final completion
-                if (line.includes('Deleting original file')) {
+                if (line.includes('Deleting original file'))
+                {
                     progressBar.update(100, {
                         status: 'Complete!',
                         speed: '',
@@ -358,15 +433,19 @@ async function downloadY(answers) {
             }
         });
 
-        ytdlp.stderr.on('data', data => {
+        ytdlp.stderr.on('data', data =>
+        {
             const errorOutput = data.toString();
-            if (!errorOutput.includes('WARNING') && !errorOutput.includes('[download]')) {
+            if (!errorOutput.includes('WARNING') && !errorOutput.includes('[download]'))
+            {
                 console.error(errorOutput);
             }
         });
 
-        ytdlp.on('close', code => {
-            if (isDownloading) {
+        ytdlp.on('close', code =>
+        {
+            if (isDownloading)
+            {
                 progressBar.update(100, {
                     status: 'Complete!',
                     speed: '',
@@ -377,8 +456,10 @@ async function downloadY(answers) {
             code === 0 ? resolve() : reject(new Error(`Download failed with exit code ${code}`));
         });
 
-        ytdlp.on('error', error => {
-            if (isDownloading) {
+        ytdlp.on('error', error =>
+        {
+            if (isDownloading)
+            {
                 progressBar.stop();
             }
             reject(new Error(`Failed to start yt-dlp: ${error.message}`));
