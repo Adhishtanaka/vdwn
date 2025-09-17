@@ -95,7 +95,7 @@ function handleKeyPress(key)
 function cancelDownload()
 {
     if (!currentDownloadProcess) { return; }
-    if (cancelDownload.cancelled) return;
+    if (cancelDownload.cancelled) {return;}
     cancelDownload.cancelled = true;
     console.log();
     console.log(colors.red("\n Cancelling download..."));

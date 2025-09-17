@@ -164,7 +164,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
         // Cross-platform process kill helper
         function killProcessTree(proc)
         {
-            if (!proc || proc.killed) return;
+            if (!proc || proc.killed) {return;}
             const pid = proc.pid;
             if (process.platform === 'win32')
             {
@@ -432,7 +432,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
         // Cross-platform process kill helper
         function killProcessTree(proc)
         {
-            if (!proc || proc.killed) return;
+            if (!proc || proc.killed) {return;}
             const pid = proc.pid;
             if (process.platform === 'win32')
             {
@@ -492,7 +492,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
                 for (const line of lines)
                 {
-                    if (!line.trim()) continue;
+                    if (!line.trim()) {continue;}
 
                     if (line.includes("audio only") || line.includes(".m4a") || line.includes("Extracting audio"))
                     {
