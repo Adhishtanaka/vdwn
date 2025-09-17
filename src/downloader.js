@@ -76,7 +76,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
         const { basename } = require("path");
         const colors = require("./utils").colors;
         let finalOutputPath = outputPath;
-        let origFilename = filename;
+        const origFilename = filename;
         let fileIndex = 1;
         if (existsSync(finalOutputPath))
         {
@@ -85,7 +85,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
             console.log(colors.yellow(`\n File already exists: ${basename(finalOutputPath)}`));
             console.log(colors.gray(`   Size: ${fileSize} MB`));
             console.log(colors.gray(`   Modified: ${stats.mtime.toLocaleString()}`));
-            console.log()
+            console.log();
             const inquirer = require("inquirer");
             const { action } = await inquirer.prompt([
                 {
@@ -102,7 +102,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
             if (action === "skip")
             {
                 console.log(colors.yellow("Skipping download as requested."));
-                return;
+                return null;
             }
             if (action === "newname")
             {
@@ -114,7 +114,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     finalOutputPath = join(outputDir, filename);
                     fileIndex++;
                 } while (existsSync(finalOutputPath));
-                console.log()
+                console.log();
                 console.log(colors.yellow(`\n Downloading as: ${filename}`));
             }
         }
@@ -161,19 +161,41 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
 
         const throttledBar = new ThrottledProgressBar(progressBar, 3000);
 
+        // Cross-platform process kill helper
+        function killProcessTree(proc)
+        {
+            if (!proc || proc.killed) return;
+            const pid = proc.pid;
+            if (process.platform === 'win32')
+            {
+                // Use taskkill to kill process tree
+                require('child_process').execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+            } else
+            {
+                // POSIX: kill process group
+                try
+                {
+                    process.kill(-pid, 'SIGKILL');
+                } catch (e)
+                {
+                    try { proc.kill('SIGKILL'); } catch (e2) { }
+                }
+            }
+        }
+
+        let cancelHandled = false;
         return new Promise((resolve, reject) =>
         {
-            let lastPercent = 0;
-            let startTime = Date.now();
+            const startTime = Date.now();
             let lastUpdateTime = startTime;
-            let lastBytes = 0;
             let totalBytes = 0;
-            let currentSeconds = 0;
+            let lastPercentValue = 0;
             throttledBar.start(100, 0, {
                 eta: "Calculating...",
                 speed: "0 KB/s"
             });
 
+            const spawnOpts = process.platform !== 'win32' ? { detached: true } : {};
             const ffmpeg = spawn("ffmpeg", [
                 "-i", url,
                 ...(answers.downloadType && answers.downloadType === "audio-only" ? ["-vn", "-acodec", "copy"] : ["-c", "copy"]),
@@ -182,19 +204,34 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                 "-loglevel", "error",
                 "-y",
                 finalOutputPath
-            ]);
+            ], spawnOpts);
 
-            setCurrentProcess(ffmpeg);
+            setCurrentProcess({
+                proc: ffmpeg,
+                kill: () =>
+                {
+                    if (!cancelHandled)
+                    {
+                        cancelHandled = true;
+                        killProcessTree(ffmpeg);
+                    }
+                }
+            });
 
-            let progressData = {};
             let buffer = "";
-            let lastPercentValue = 0;
+            const progressData = {};
 
             ffmpeg.stderr.on("data", data =>
             {
-                if (isCancelled()) { return; }
+                if (isCancelled() && !cancelHandled)
+                {
+                    cancelHandled = true;
+                    throttledBar.stop();
+                    killProcessTree(ffmpeg);
+                    return;
+                }
                 buffer += data.toString();
-                let lines = buffer.split(/\r?\n/);
+                const lines = buffer.split(/\r?\n/);
                 buffer = lines.pop();
                 for (const line of lines)
                 {
@@ -215,11 +252,10 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     } else if (progressData["out_time"])
                     {
                         const t = progressData["out_time"].split(":").reverse();
-                        if (t.length === 3) seconds = (+t[2]) * 3600 + (+t[1]) * 60 + (+t[0]);
-                        else if (t.length === 2) seconds = (+t[1]) * 60 + (+t[0]);
-                        else seconds = +t[0];
+                        if (t.length === 3) { seconds = (+t[2]) * 3600 + (+t[1]) * 60 + (+t[0]); }
+                        else if (t.length === 2) { seconds = (+t[1]) * 60 + (+t[0]); }
+                        else { seconds = +t[0]; }
                     }
-                    currentSeconds = seconds;
                     if (progressData["total_size"])
                     {
                         totalBytes = parseInt(progressData["total_size"]);
@@ -235,10 +271,10 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     {
                         percent = lastPercentValue;
                     }
-                    if (typeof percent === 'number' && percent > lastPercentValue) lastPercentValue = percent;
-                    let elapsed = (now - startTime) / 1000;
-                    let speed = totalBytes > 0 && elapsed > 0 ? (totalBytes / 1024 / elapsed).toFixed(1) + " KB/s" : "-";
-                    let eta = (typeof totalDuration === 'number' && !isNaN(totalDuration) && totalDuration > 0 && seconds > 0)
+                    if (typeof percent === 'number' && percent > lastPercentValue) { lastPercentValue = percent; }
+                    const elapsed = (now - startTime) / 1000;
+                    const speed = totalBytes > 0 && elapsed > 0 ? (totalBytes / 1024 / elapsed).toFixed(1) + " KB/s" : "-";
+                    const eta = (typeof totalDuration === 'number' && !isNaN(totalDuration) && totalDuration > 0 && seconds > 0)
                         ? Math.max(0, Math.round((totalDuration - seconds) / (seconds / elapsed))) + "s"
                         : "Unknown";
                     if (now - lastUpdateTime >= 3000 || percent === 100)
@@ -263,6 +299,10 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     percentage: 100
                 });
                 throttledBar.stop();
+                if (cancelHandled)
+                {
+                    return reject(new Error("Download operation was cancelled by user"));
+                }
                 if (code === 0)
                 {
                     console.log();
@@ -296,7 +336,8 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
         const formatSelector = getFormatSelector(answers);
         const outputTemplate = join(answers.output, "%(title)s.%(ext)s");
 
-        const { existsSync, statSync, basename } = require("fs");
+        const { existsSync, statSync } = require("fs");
+        const { basename } = require("path");
         const colors = require("./utils").colors;
         const execAsync = require("util").promisify(require("child_process").exec);
         let outputFilename = null;
@@ -304,18 +345,25 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
         {
             const { stdout } = await execAsync(`yt-dlp --get-filename --output \"%(title)s.%(ext)s\" \"${answers.url}\"`);
             outputFilename = stdout.trim();
-        } catch (e) { }
+        } catch (e)
+        {
+
+        }
+        let finalOutputPath = null;
+        let filename = null;
+        let fileIndex = 1;
         if (outputFilename)
         {
-            const outputPath = join(answers.output, outputFilename);
-            if (existsSync(outputPath))
+            filename = outputFilename;
+            finalOutputPath = join(answers.output, filename);
+            if (existsSync(finalOutputPath))
             {
-                const stats = statSync(outputPath);
+                const stats = statSync(finalOutputPath);
                 const fileSize = (stats.size / (1024 * 1024)).toFixed(2);
-                console.log(colors.yellow(`\n File already exists: ${basename(outputPath)}`));
+                console.log(colors.yellow(`\n File already exists: ${basename(finalOutputPath)}`));
                 console.log(colors.gray(`   Size: ${fileSize} MB`));
                 console.log(colors.gray(`   Modified: ${stats.mtime.toLocaleString()}`));
-                console.log()
+                console.log();
                 const inquirer = require("inquirer");
                 const { action } = await inquirer.prompt([
                     {
@@ -324,6 +372,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                         message: "What would you like to do?",
                         choices: [
                             { name: "Overwrite existing file", value: "overwrite" },
+                            { name: "Download with new name", value: "newname" },
                             { name: "Skip this download", value: "skip" }
                         ]
                     }
@@ -331,7 +380,20 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                 if (action === "skip")
                 {
                     console.log(colors.yellow("Skipping download as requested."));
-                    return;
+                    return null;
+                }
+                if (action === "newname")
+                {
+                    const ext = filename.includes('.') ? filename.substring(filename.lastIndexOf('.')) : '';
+                    const base = filename.replace(ext, '');
+                    do
+                    {
+                        filename = `${base} (${fileIndex})${ext}`;
+                        finalOutputPath = join(answers.output, filename);
+                        fileIndex++;
+                    } while (existsSync(finalOutputPath));
+                    console.log();
+                    console.log(colors.yellow(`\n Downloading as: ${filename}`));
                 }
             }
         }
@@ -356,7 +418,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
         const args = [
             "--format", formatSelector,
-            "--output", outputTemplate,
+            "--output", finalOutputPath ? finalOutputPath : outputTemplate,
             "--progress",
             "--newline",
             answers.url
@@ -367,15 +429,46 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
             args.push("--extract-audio", "--audio-format", "mp3");
         }
 
+        // Cross-platform process kill helper
+        function killProcessTree(proc)
+        {
+            if (!proc || proc.killed) return;
+            const pid = proc.pid;
+            if (process.platform === 'win32')
+            {
+                require('child_process').execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+            } else
+            {
+                try
+                {
+                    process.kill(-pid, 'SIGKILL');
+                } catch (e)
+                {
+                    try { proc.kill('SIGKILL'); } catch (e2) { }
+                }
+            }
+        }
+
+        let cancelHandled = false;
         return new Promise((resolve, reject) =>
         {
-            const ytdlp = spawn("yt-dlp", args);
-            setCurrentProcess(ytdlp);
+            const spawnOpts = process.platform !== 'win32' ? { detached: true } : {};
+            const ytdlp = spawn("yt-dlp", args, spawnOpts);
+            setCurrentProcess({
+                proc: ytdlp,
+                kill: () =>
+                {
+                    if (!cancelHandled)
+                    {
+                        cancelHandled = true;
+                        killProcessTree(ytdlp);
+                    }
+                }
+            });
 
             let currentPhase = answers.downloadType === "audio-only" ? "audio" : "video";
             let buffer = "";
             let lastProgress = -1;
-            let isStarted = false;
 
             throttledBar.start(100, 0, {
                 phase: currentPhase,
@@ -385,7 +478,13 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
             ytdlp.stdout.on("data", data =>
             {
-                if (isCancelled()) { return; }
+                if (isCancelled() && !cancelHandled)
+                {
+                    cancelHandled = true;
+                    throttledBar.stop();
+                    killProcessTree(ytdlp);
+                    return;
+                }
 
                 buffer += data.toString();
                 const lines = buffer.split("\n");
@@ -393,7 +492,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
                 for (const line of lines)
                 {
-                    if (!line.trim()) { continue; }
+                    if (!line.trim()) continue;
 
                     if (line.includes("audio only") || line.includes(".m4a") || line.includes("Extracting audio"))
                     {
@@ -406,7 +505,6 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
                     if (line.includes("[download]") && line.includes("%"))
                     {
-                        isStarted = true;
                         const progressMatch = line.match(/\[download\]\s+([0-9.]+)%\s+of\s+([0-9.]+(?:KiB|MiB|GiB))\s+at\s+([0-9.]+(?:\.[0-9]+)?(?:KiB|MiB|GiB))\/s(?:\s+ETA\s+([0-9:]+))?/);
 
                         if (progressMatch)
@@ -460,11 +558,10 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
             {
                 setCurrentProcess(null);
 
-                if (isCancelled())
+                if (cancelHandled)
                 {
                     throttledBar.stop();
-                    reject(new Error("Download operation was cancelled by user"));
-                    return;
+                    return reject(new Error("Download operation was cancelled by user"));
                 }
 
                 throttledBar.update(100, {

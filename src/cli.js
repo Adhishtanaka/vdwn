@@ -1,5 +1,5 @@
 const inquirer = require("inquirer");
-const { colors, isYouTube, ensureOutputDirectory, basename, statSync, isValidYouTubeMediaUrl } = require("./utils");
+const { colors, isYouTube, ensureOutputDirectory, isValidYouTubeMediaUrl } = require("./utils");
 const { downloadY, downloadO } = require("./downloader");
 
 let currentDownloadProcess = null;
@@ -7,6 +7,7 @@ let isCancelled = false;
 let progressBars = null;
 
 let currentDownloaderType = null;
+let hotkeyListenerActive = false;
 function setupDownloadControls(type)
 {
     currentDownloaderType = type;
@@ -16,10 +17,16 @@ function setupDownloadControls(type)
     console.log();
     if (process.stdin.isTTY)
     {
+        if (hotkeyListenerActive)
+        {
+            process.stdin.removeListener("data", handleKeyPress);
+            hotkeyListenerActive = false;
+        }
         process.stdin.setRawMode(true);
         process.stdin.resume();
         process.stdin.setEncoding("utf8");
         process.stdin.on("data", handleKeyPress);
+        hotkeyListenerActive = true;
     }
 }
 
@@ -35,6 +42,8 @@ function handleKeyPress(key)
         openOutputFolder();
         return;
     }
+
+
     function openOutputFolder()
     {
         const path = require("path");
@@ -86,62 +95,21 @@ function handleKeyPress(key)
 function cancelDownload()
 {
     if (!currentDownloadProcess) { return; }
+    if (cancelDownload.cancelled) return;
+    cancelDownload.cancelled = true;
+    console.log();
     console.log(colors.red("\n Cancelling download..."));
     isCancelled = true;
-    currentDownloadProcess.kill("SIGTERM");
+    if (typeof currentDownloadProcess.kill === 'function')
+    {
+        currentDownloadProcess.kill();
+    } else if (currentDownloadProcess.proc && typeof currentDownloadProcess.proc.kill === 'function')
+    {
+        currentDownloadProcess.proc.kill('SIGTERM');
+    }
     if (progressBars)
     {
         progressBars.stop();
-    }
-}
-
-async function checkExistingYouTubeFile(url, answers)
-{
-    const execAsync = require("util").promisify(require("child_process").exec);
-    try
-    {
-        const { stdout } = await execAsync(`yt-dlp --get-filename --output \"%(title)s.%(ext)s\" \"${url}\"`);
-        const filename = stdout.trim();
-        const filepath = require("path").join(answers.output, filename);
-        if (require("fs").existsSync(filepath))
-        {
-            return filepath;
-        }
-        if (answers.downloadType === "audio-only")
-        {
-            const audioFilepath = filepath.replace(/\.[^.]+$/, ".mp3");
-            if (require("fs").existsSync(audioFilepath))
-            {
-                return audioFilepath;
-            }
-        }
-        return null;
-    } catch (error)
-    {
-        return null;
-    }
-}
-
-async function checkExistingOtherFile(url, outputDir)
-{
-    try
-    {
-        const urlObj = new URL(url);
-        let filename = urlObj.pathname.split("/").pop() || "output";
-        filename = filename.split("?")[0];
-        if (!filename.match(/\.(mp4|mkv|webm|mp3|mov|avi)$/i))
-        {
-            filename += ".mp4";
-        }
-        const filepath = require("path").join(outputDir, filename);
-        if (require("fs").existsSync(filepath))
-        {
-            return filepath;
-        }
-        return null;
-    } catch (error)
-    {
-        return null;
     }
 }
 
@@ -200,6 +168,7 @@ async function downloadLoop()
                 ensureOutputDirectory(ytAnswers.output);
                 global.lastYTAnswers = ytAnswers;
                 setupDownloadControls('yt-dlp');
+                cancelDownload.cancelled = false;
                 await downloadY(
                     { url, ...ytAnswers },
                     proc => currentDownloadProcess = proc,
@@ -219,6 +188,7 @@ async function downloadLoop()
                 ensureOutputDirectory(output);
                 global.lastOtherOutput = output;
                 setupDownloadControls('ffmpeg');
+                cancelDownload.cancelled = false;
                 await downloadO(
                     { url, output },
                     proc => currentDownloadProcess = proc,
@@ -236,31 +206,39 @@ async function downloadLoop()
             ]);
             if (!continueDownloading)
             {
-                console.log(colors.yellow("Thanks for using the downloader! 👋"));
+                console.log();
+                console.log(colors.yellow("Thanks for using the vdwn!"));
                 break;
             }
             require("./utils").clearScreen();
         } catch (error)
         {
-            if (error.message.includes("cancelled"))
+            if (error.message && error.message.includes("cancelled"))
             {
                 console.log(colors.yellow("\n  Download was cancelled by user."));
             } else
             {
                 console.error(colors.red("\n Error:"), error && error.stack ? error.stack : error.message);
             }
-            const { retry } = await inquirer.prompt([
+            const { continueDownloading } = await inquirer.prompt([
                 {
                     type: "confirm",
-                    name: "retry",
-                    message: "Would you like to try again?",
+                    name: "continueDownloading",
+                    message: "Would you like to download another video?",
                     default: true
                 }
             ]);
-            if (!retry) { break; }
+            if (!continueDownloading)
+            {
+                console.log();
+                console.log(colors.yellow("Thanks for using the vdwn!"));
+                break;
+            }
+            require("./utils").clearScreen();
         }
         isCancelled = false;
         currentDownloadProcess = null;
+        cancelDownload.cancelled = false;
     }
 }
 
