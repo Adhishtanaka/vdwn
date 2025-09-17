@@ -216,6 +216,7 @@ async function downloadLoop()
             if (error.message && error.message.includes("cancelled"))
             {
                 console.log(colors.yellow("\n  Download was cancelled by user."));
+                console.log();
             } else
             {
                 console.error(colors.red("\n Error:"), error && error.stack ? error.stack : error.message);
