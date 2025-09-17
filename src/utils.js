@@ -47,15 +47,15 @@ function isValidYouTubeMediaUrl(url)
     try
     {
         const u = new URL(url);
-        if (!/^(www\.)?youtube\.com$|^(m\.)?youtube\.com$|^(www\.)?youtu\.be$/.test(u.hostname)) {return false;}
+        if (!/^(www\.)?youtube\.com$|^(m\.)?youtube\.com$|^(www\.)?youtu\.be$/.test(u.hostname)) { return false; }
         if (u.hostname.includes("youtu.be"))
         {
             return u.pathname.length > 1;
         }
-        if (u.pathname === "/watch" && u.searchParams.has("v")) {return true;}
-        if (u.pathname.startsWith("/shorts/") && u.pathname.split("/")[2]) {return true;}
-        if (u.pathname === "/playlist" && u.searchParams.has("list")) {return true;}
-        if (u.pathname === "/watch" && u.searchParams.has("list")) {return true;}
+        if (u.pathname === "/watch" && u.searchParams.has("v")) { return true; }
+        if (u.pathname.startsWith("/shorts/") && u.pathname.split("/")[2]) { return true; }
+        if (u.pathname === "/playlist" && u.searchParams.has("list")) { return true; }
+        if (u.pathname === "/watch" && u.searchParams.has("list")) { return true; }
         return false;
     } catch
     {
@@ -67,6 +67,7 @@ module.exports = {
     clearScreen,
     isYouTube,
     isValidYouTubeMediaUrl,
+    parseYouTubeUrl,
     ensureOutputDirectory,
     getFormatSelector,
     join,
@@ -76,3 +77,43 @@ module.exports = {
     statSync,
     colors
 };
+
+/**
+ * Parses a YouTube URL and returns only the essential part (video, short, or playlist).
+ * @param {string} url
+ * @returns {string|null} The cleaned URL or null if not recognized.
+ */
+function parseYouTubeUrl(url)
+{
+    try
+    {
+        const u = new URL(url);
+        let base = `${u.protocol}//${u.hostname}`;
+        if (u.hostname.includes("youtu.be"))
+        {
+            // Short youtu.be links: https://youtu.be/VIDEOID
+            const videoId = u.pathname.slice(1).split("/")[0];
+            return videoId ? `${base}/${videoId}` : null;
+        }
+        if (u.pathname === "/watch" && u.searchParams.has("v"))
+        {
+            // Video: https://www.youtube.com/watch?v=VIDEOID
+            return `${base}/watch?v=${u.searchParams.get("v")}`;
+        }
+        if (u.pathname.startsWith("/shorts/"))
+        {
+            // Shorts: https://www.youtube.com/shorts/VIDEOID
+            const shortId = u.pathname.split("/")[2];
+            return shortId ? `${base}/shorts/${shortId}` : null;
+        }
+        if (u.pathname === "/playlist" && u.searchParams.has("list"))
+        {
+            // Playlist: https://www.youtube.com/playlist?list=LISTID
+            return `${base}/playlist?list=${u.searchParams.get("list")}`;
+        }
+        return null;
+    } catch
+    {
+        return null;
+    }
+}

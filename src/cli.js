@@ -1,5 +1,5 @@
 const inquirer = require("inquirer");
-const { colors, isYouTube, ensureOutputDirectory, isValidYouTubeMediaUrl } = require("./utils");
+const { colors, isYouTube, ensureOutputDirectory, isValidYouTubeMediaUrl, parseYouTubeUrl } = require("./utils");
 const { downloadY, downloadO } = require("./downloader");
 
 let currentDownloadProcess = null;
@@ -95,7 +95,7 @@ function handleKeyPress(key)
 function cancelDownload()
 {
     if (!currentDownloadProcess) { return; }
-    if (cancelDownload.cancelled) {return;}
+    if (cancelDownload.cancelled) { return; }
     cancelDownload.cancelled = true;
     console.log();
     console.log(colors.red("\n Cancelling download..."));
@@ -138,7 +138,8 @@ async function downloadLoop()
             }
             if (isYouTube(url))
             {
-                if (!isValidYouTubeMediaUrl(url))
+                const cleanedUrl = parseYouTubeUrl(url);
+                if (!cleanedUrl || !isValidYouTubeMediaUrl(cleanedUrl))
                 {
                     require("./utils").clearScreen();
                     console.log(colors.red("\n Please enter a valid YouTube video, short, or playlist URL."));
@@ -170,7 +171,7 @@ async function downloadLoop()
                 setupDownloadControls('yt-dlp');
                 cancelDownload.cancelled = false;
                 await downloadY(
-                    { url, ...ytAnswers },
+                    { url: cleanedUrl, ...ytAnswers },
                     proc => currentDownloadProcess = proc,
                     bars => progressBars = bars,
                     () => isCancelled
