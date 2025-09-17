@@ -1,4 +1,3 @@
-// Handles dependency checks and installation
 const colors = require("ansi-colors");
 const execAsync = require("util").promisify(require("child_process").exec);
 

@@ -1,18 +1,18 @@
-// Handles CLI prompts, user input, and main loop
 const inquirer = require("inquirer");
-const { colors, isYouTube, ensureOutputDirectory, basename, statSync } = require("./utils");
+const { colors, isYouTube, ensureOutputDirectory, basename, statSync, isValidYouTubeMediaUrl } = require("./utils");
 const { downloadY, downloadO } = require("./downloader");
 
 let currentDownloadProcess = null;
 let isCancelled = false;
 let progressBars = null;
 
-let currentDownloaderType = null; // 'yt-dlp' or 'ffmpeg'
+let currentDownloaderType = null;
 function setupDownloadControls(type)
 {
     currentDownloaderType = type;
     console.log();
     console.log("  [C] - Cancel download");
+    console.log("  [O] - Open output folder");
     console.log();
     if (process.stdin.isTTY)
     {
@@ -29,6 +29,55 @@ function handleKeyPress(key)
     {
         cancelDownload();
         return;
+    }
+    if (key === "o" || key === "O")
+    {
+        openOutputFolder();
+        return;
+    }
+    function openOutputFolder()
+    {
+        const path = require("path");
+        const fs = require("fs");
+        let outputDir = null;
+        if (currentDownloaderType === 'yt-dlp' && global.lastYTAnswers && global.lastYTAnswers.output)
+        {
+            outputDir = global.lastYTAnswers.output;
+        } else if (currentDownloaderType === 'ffmpeg' && global.lastOtherOutput)
+        {
+            outputDir = global.lastOtherOutput;
+        } else
+        {
+            outputDir = "./downloads";
+        }
+        outputDir = path.resolve(outputDir);
+        if (!fs.existsSync(outputDir))
+        {
+            console.log(colors.red(`\n Output directory does not exist: ${outputDir}`));
+            return;
+        }
+        const { exec } = require("child_process");
+        let command;
+        if (process.platform === "win32")
+        {
+            command = `explorer "${outputDir}"`;
+        } else if (process.platform === "darwin")
+        {
+            command = `open "${outputDir}"`;
+        } else
+        {
+            command = `xdg-open "${outputDir}"`;
+        }
+        exec(command, err =>
+        {
+            if (err)
+            {
+                if (process.platform !== "win32")
+                {
+                    console.log(colors.red("\n Failed to open output folder:"), err.message);
+                }
+            }
+        });
     }
 }
 
@@ -96,31 +145,6 @@ async function checkExistingOtherFile(url, outputDir)
     }
 }
 
-async function handleExistingFile(filepath)
-{
-    const stats = statSync(filepath);
-    const fileSize = (stats.size / (1024 * 1024)).toFixed(2);
-    console.log(colors.yellow(`\n⚠️  File already exists: ${basename(filepath)}`));
-    console.log(colors.gray(`   Size: ${fileSize} MB`));
-    console.log(colors.gray(`   Modified: ${stats.mtime.toLocaleString()}`));
-    const { action } = await inquirer.prompt([
-        {
-            type: "list",
-            name: "action",
-            message: "What would you like to do?",
-            choices: [
-                { name: "Overwrite existing file", value: "overwrite" },
-                { name: "Skip this download", value: "skip" }
-            ]
-        }
-    ]);
-    if (action === "skip")
-    {
-        return false;
-    }
-    return true;
-}
-
 async function downloadLoop()
 {
     while (true)
@@ -146,6 +170,12 @@ async function downloadLoop()
             }
             if (isYouTube(url))
             {
+                if (!isValidYouTubeMediaUrl(url))
+                {
+                    require("./utils").clearScreen();
+                    console.log(colors.red("\n Please enter a valid YouTube video, short, or playlist URL."));
+                    continue;
+                }
                 const ytAnswers = await inquirer.prompt([
                     {
                         type: "list",
@@ -168,11 +198,7 @@ async function downloadLoop()
                     }
                 ]);
                 ensureOutputDirectory(ytAnswers.output);
-                const existingFile = await checkExistingYouTubeFile(url, ytAnswers);
-                if (existingFile && !(await handleExistingFile(existingFile)))
-                {
-                    continue;
-                }
+                global.lastYTAnswers = ytAnswers;
                 setupDownloadControls('yt-dlp');
                 await downloadY(
                     { url, ...ytAnswers },
@@ -191,11 +217,7 @@ async function downloadLoop()
                     }
                 ]);
                 ensureOutputDirectory(output);
-                const existingFile = await checkExistingOtherFile(url, output);
-                if (existingFile && !(await handleExistingFile(existingFile)))
-                {
-                    continue;
-                }
+                global.lastOtherOutput = output;
                 setupDownloadControls('ffmpeg');
                 await downloadO(
                     { url, output },
@@ -203,7 +225,7 @@ async function downloadLoop()
                     () => isCancelled
                 );
             }
-            console.log(); // Add a blank line for spacing
+            console.log();
             const { continueDownloading } = await inquirer.prompt([
                 {
                     type: "confirm",
@@ -238,7 +260,6 @@ async function downloadLoop()
             if (!retry) { break; }
         }
         isCancelled = false;
-        // isPaused = false;
         currentDownloadProcess = null;
     }
 }

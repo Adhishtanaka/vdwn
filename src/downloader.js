@@ -1,8 +1,7 @@
-// Handles download logic and progress bars
 const { spawn, exec } = require("child_process");
 const cliProgress = require("cli-progress");
 const execAsync = require("util").promisify(exec);
-const { join} = require("./utils");
+const { join } = require("./utils");
 
 class ThrottledProgressBar
 {
@@ -73,16 +72,20 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
         }
         const outputPath = join(outputDir, filename);
 
-        // Overwrite detection
-        const { existsSync, statSync, basename } = require("fs");
+        const { existsSync, statSync } = require("fs");
+        const { basename } = require("path");
         const colors = require("./utils").colors;
-        if (existsSync(outputPath))
+        let finalOutputPath = outputPath;
+        let origFilename = filename;
+        let fileIndex = 1;
+        if (existsSync(finalOutputPath))
         {
-            const stats = statSync(outputPath);
+            const stats = statSync(finalOutputPath);
             const fileSize = (stats.size / (1024 * 1024)).toFixed(2);
-            console.log(colors.yellow(`\n⚠️  File already exists: ${basename(outputPath)}`));
+            console.log(colors.yellow(`\n File already exists: ${basename(finalOutputPath)}`));
             console.log(colors.gray(`   Size: ${fileSize} MB`));
             console.log(colors.gray(`   Modified: ${stats.mtime.toLocaleString()}`));
+            console.log()
             const inquirer = require("inquirer");
             const { action } = await inquirer.prompt([
                 {
@@ -91,6 +94,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     message: "What would you like to do?",
                     choices: [
                         { name: "Overwrite existing file", value: "overwrite" },
+                        { name: "Download with new name", value: "newname" },
                         { name: "Skip this download", value: "skip" }
                     ]
                 }
@@ -99,6 +103,19 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
             {
                 console.log(colors.yellow("Skipping download as requested."));
                 return;
+            }
+            if (action === "newname")
+            {
+                const ext = origFilename.includes('.') ? origFilename.substring(origFilename.lastIndexOf('.')) : '';
+                const base = origFilename.replace(ext, '');
+                do
+                {
+                    filename = `${base} (${fileIndex})${ext}`;
+                    finalOutputPath = join(outputDir, filename);
+                    fileIndex++;
+                } while (existsSync(finalOutputPath));
+                console.log()
+                console.log(colors.yellow(`\n Downloading as: ${filename}`));
             }
         }
 
@@ -119,25 +136,42 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
         const progressBar = new cliProgress.SingleBar({
             format: function (options, params, payload)
             {
-                const percent = typeof params.percentage === 'number' && !isNaN(params.percentage) ? params.percentage : 0;
+                let percent;
+                if (typeof params.percentage === 'number' && !isNaN(params.percentage))
+                {
+                    percent = params.percentage;
+                } else if (typeof params.value === 'number' && typeof params.total === 'number' && params.total > 0)
+                {
+                    percent = Math.round((params.value / params.total) * 100);
+                } else if (typeof params.progress === 'number')
+                {
+                    percent = Math.round(params.progress * 100);
+                } else
+                {
+                    percent = '??';
+                }
                 const bar = colors.cyan(options.barCompleteString.substr(0, Math.round(params.progress * options.barsize)) +
                     options.barIncompleteString.substr(0, options.barsize - Math.round(params.progress * options.barsize)));
-                return `[DOWNLOAD] |${bar}| ${percent}% | ${payload.currentTime}/${payload.totalTime} sec | ETA: ${payload.eta}`;
+                return `[VIDEO] |${bar}| ${percent}% | ETA: ${payload.eta} | Speed: ${payload.speed}`;
             },
             barCompleteChar: "\u2588",
             barIncompleteChar: "\u2591",
             hideCursor: true
         });
 
-        const throttledBar = new ThrottledProgressBar(progressBar);
+        const throttledBar = new ThrottledProgressBar(progressBar, 3000);
 
         return new Promise((resolve, reject) =>
         {
             let lastPercent = 0;
+            let startTime = Date.now();
+            let lastUpdateTime = startTime;
+            let lastBytes = 0;
+            let totalBytes = 0;
+            let currentSeconds = 0;
             throttledBar.start(100, 0, {
-                currentTime: "0",
-                totalTime: totalDuration ? totalDuration.toFixed(1) : "Unknown",
-                eta: "Calculating..."
+                eta: "Calculating...",
+                speed: "0 KB/s"
             });
 
             const ffmpeg = spawn("ffmpeg", [
@@ -147,73 +181,91 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                 "-nostats",
                 "-loglevel", "error",
                 "-y",
-                outputPath
+                finalOutputPath
             ]);
 
             setCurrentProcess(ffmpeg);
 
+            let progressData = {};
+            let buffer = "";
+            let lastPercentValue = 0;
+
             ffmpeg.stderr.on("data", data =>
             {
-                if (isCancelled()) return;
-                const str = data.toString();
-                const timeMatch = str.match(/time=([\d:.]+)/);
-                if (timeMatch && totalDuration)
+                if (isCancelled()) { return; }
+                buffer += data.toString();
+                let lines = buffer.split(/\r?\n/);
+                buffer = lines.pop();
+                for (const line of lines)
                 {
-                    const t = timeMatch[1].split(":").reverse();
+                    const [key, value] = line.split("=");
+                    if (key && value !== undefined)
+                    {
+                        progressData[key.trim()] = value.trim();
+                    }
+                }
+
+                const now = Date.now();
+                if (progressData["out_time_ms"] || progressData["out_time"] || progressData["total_size"])
+                {
                     let seconds = 0;
-                    if (t.length === 3)
+                    if (progressData["out_time_ms"])
                     {
-                        seconds = (+t[2]) * 3600 + (+t[1]) * 60 + (+t[0]);
-                    } else if (t.length === 2)
+                        seconds = parseInt(progressData["out_time_ms"]) / 1000000;
+                    } else if (progressData["out_time"])
                     {
-                        seconds = (+t[1]) * 60 + (+t[0]);
+                        const t = progressData["out_time"].split(":").reverse();
+                        if (t.length === 3) seconds = (+t[2]) * 3600 + (+t[1]) * 60 + (+t[0]);
+                        else if (t.length === 2) seconds = (+t[1]) * 60 + (+t[0]);
+                        else seconds = +t[0];
+                    }
+                    currentSeconds = seconds;
+                    if (progressData["total_size"])
+                    {
+                        totalBytes = parseInt(progressData["total_size"]);
+                    }
+                    let percent;
+                    if (typeof totalDuration === 'number' && !isNaN(totalDuration) && totalDuration > 0)
+                    {
+                        percent = Math.min(100, Math.round((seconds / totalDuration) * 100));
+                    } else if (typeof seconds === 'number' && seconds > 0)
+                    {
+                        percent = Math.min(100, Math.round((seconds / (seconds + 1)) * 100));
                     } else
                     {
-                        seconds = +t[0];
+                        percent = lastPercentValue;
                     }
-                    const percent = Math.min(100, Math.round((seconds / totalDuration) * 100));
-                    const eta = totalDuration && seconds > 0 ?
-                        Math.round((totalDuration - seconds) * (Date.now() / 1000) / seconds) + "s" : "Unknown";
-                    if (percent !== lastPercent)
+                    if (typeof percent === 'number' && percent > lastPercentValue) lastPercentValue = percent;
+                    let elapsed = (now - startTime) / 1000;
+                    let speed = totalBytes > 0 && elapsed > 0 ? (totalBytes / 1024 / elapsed).toFixed(1) + " KB/s" : "-";
+                    let eta = (typeof totalDuration === 'number' && !isNaN(totalDuration) && totalDuration > 0 && seconds > 0)
+                        ? Math.max(0, Math.round((totalDuration - seconds) / (seconds / elapsed))) + "s"
+                        : "Unknown";
+                    if (now - lastUpdateTime >= 3000 || percent === 100)
                     {
-                        lastPercent = percent;
+                        lastUpdateTime = now;
                         throttledBar.update(percent, {
-                            currentTime: seconds.toFixed(1),
-                            totalTime: totalDuration.toFixed(1),
-                            eta: eta
+                            eta: eta,
+                            speed: speed,
+                            percentage: percent
                         });
                     }
-                } else
-                {
-                    // Always show at least 0% if no time info
-                    throttledBar.update(0, {
-                        currentTime: "0",
-                        totalTime: totalDuration ? totalDuration.toFixed(1) : "Unknown",
-                        eta: "Calculating..."
-                    });
                 }
             });
 
             ffmpeg.on("close", code =>
             {
                 setCurrentProcess(null);
-
-                if (isCancelled())
-                {
-                    throttledBar.stop();
-                    reject(new Error("Download operation was cancelled by user"));
-                    return;
-                }
-
+                progressBar.update(100, { eta: "Complete", speed: "-", percentage: 100 });
                 throttledBar.update(100, {
-                    currentTime: totalDuration ? totalDuration.toFixed(1) : "Complete",
-                    totalTime: totalDuration ? totalDuration.toFixed(1) : "Complete",
-                    eta: "Complete"
+                    eta: "Complete",
+                    speed: "-",
+                    percentage: 100
                 });
                 throttledBar.stop();
-
                 if (code === 0)
                 {
+                    console.log();
                     console.log(colors.green(`[SUCCESS] Download completed: ${filename}`));
                     resolve();
                 } else
@@ -244,10 +296,8 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
         const formatSelector = getFormatSelector(answers);
         const outputTemplate = join(answers.output, "%(title)s.%(ext)s");
 
-        // Overwrite detection for YouTube
         const { existsSync, statSync, basename } = require("fs");
         const colors = require("./utils").colors;
-        // Try to get the output filename using yt-dlp
         const execAsync = require("util").promisify(require("child_process").exec);
         let outputFilename = null;
         try
@@ -262,9 +312,10 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
             {
                 const stats = statSync(outputPath);
                 const fileSize = (stats.size / (1024 * 1024)).toFixed(2);
-                console.log(colors.yellow(`\n⚠️  File already exists: ${basename(outputPath)}`));
+                console.log(colors.yellow(`\n File already exists: ${basename(outputPath)}`));
                 console.log(colors.gray(`   Size: ${fileSize} MB`));
                 console.log(colors.gray(`   Modified: ${stats.mtime.toLocaleString()}`));
+                console.log()
                 const inquirer = require("inquirer");
                 const { action } = await inquirer.prompt([
                     {
@@ -285,7 +336,6 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
             }
         }
 
-        // Single progress bar that changes color for audio phase
         const progressBar = new cliProgress.SingleBar({
             format: function (options, params, payload)
             {
@@ -335,7 +385,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
             ytdlp.stdout.on("data", data =>
             {
-                if (isCancelled()) return;
+                if (isCancelled()) { return; }
 
                 buffer += data.toString();
                 const lines = buffer.split("\n");
@@ -343,9 +393,8 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
                 for (const line of lines)
                 {
-                    if (!line.trim()) continue;
+                    if (!line.trim()) { continue; }
 
-                    // Detect phase changes
                     if (line.includes("audio only") || line.includes(".m4a") || line.includes("Extracting audio"))
                     {
                         if (currentPhase !== "audio")
@@ -355,7 +404,6 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                         }
                     }
 
-                    // Handle download progress
                     if (line.includes("[download]") && line.includes("%"))
                     {
                         isStarted = true;
@@ -370,7 +418,6 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                             if (Math.round(percent) !== lastProgress)
                             {
                                 lastProgress = Math.round(percent);
-                                // cli-progress expects percent (0-100) as value, and will normalize for bar fill
                                 throttledBar.update(percent, {
                                     phase: currentPhase,
                                     speed: speed + "/s",
@@ -380,7 +427,6 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                         }
                     }
 
-                    // Handle completion
                     if (line.includes("[download] 100%"))
                     {
                         throttledBar.update(100, {
@@ -390,7 +436,6 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                         });
                     }
 
-                    // Handle post-processing
                     if (line.includes("[ExtractAudio]") || line.includes("Extracting audio"))
                     {
                         throttledBar.update(100, {
@@ -427,12 +472,12 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                     speed: "",
                     eta: ""
                 });
-                // Force bar to full
                 progressBar.update(100);
                 throttledBar.stop();
 
                 if (code === 0)
                 {
+                    console.log();
                     console.log(colors.green("\n[SUCCESS] Download completed successfully"));
                     resolve();
                 } else
