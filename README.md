@@ -1,21 +1,21 @@
 # vdwn
 
-**vdwn** is a simple yet powerful interactive CLI tool for downloading videos and audio from YouTube and other supported sources. It handles installation of required dependencies automatically and offers a smooth, user-friendly experience.
+**vdwn** is a simple yet powerful interactive CLI wrapper that makes it easy to download videos and audio from YouTube and other supported sources. By wrapping powerful tools like yt-dlp and ffmpeg, it automates the installation of required dependencies and offers a smooth, user-friendly experience.
 
- <img src="gif/ss.gif" alt="Demo" height="300" />
+<img src="gif/ss.gif" alt="Demo" height="300" />
 
 ## Features
 
 * Download full videos or audio-only tracks from YouTube and other URLs
 * Select video quality: 1440p, 1080p, 720p, or best available
-* Automatic installation of dependencies (`yt-dlp`, `ffmpeg`) using Scoop on Windows
+* Automatic installation of dependencies (`yt-dlp`, `ffmpeg`) using **Winget on Windows, Homebrew on macOS, and apt, dnf, or pacman on Linux.**
 * Displays download progress with a clear progress bar
 * Save output to a custom directory of your choice
 
 ## Requirements
 
 * **Node.js** v18 or later
-* **Windows** (Scoop required for automatic dependency installation)
+* **Windows** (Winget required for automatic dependency installation), macOS, or Linux
 
 ## Installation
 
