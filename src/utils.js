@@ -78,17 +78,12 @@ module.exports = {
     colors
 };
 
-/**
- * Parses a YouTube URL and returns only the essential part (video, short, or playlist).
- * @param {string} url
- * @returns {string|null} The cleaned URL or null if not recognized.
- */
 function parseYouTubeUrl(url)
 {
     try
     {
         const u = new URL(url);
-        let base = `${u.protocol}//${u.hostname}`;
+        const base = `${u.protocol}//${u.hostname}`;
         if (u.hostname.includes("youtu.be"))
         {
             // Short youtu.be links: https://youtu.be/VIDEOID

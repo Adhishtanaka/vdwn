@@ -56,9 +56,70 @@ class ThrottledProgressBar
     }
 }
 
+// Cross-platform process kill helper
+function killProcessTree(proc)
+{
+    if (!proc || proc.killed) { return; }
+    const pid = proc.pid;
+    if (process.platform === 'win32')
+    {
+        // Use taskkill to kill process tree
+        require('child_process').execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+    } else
+    {
+        // POSIX: kill process group
+        try
+        {
+            process.kill(-pid, 'SIGKILL');
+        } catch (e)
+        {
+            try { proc.kill('SIGKILL'); } catch (e2) { }
+        }
+    }
+}
+
 async function downloadO(answers, setCurrentProcess, isCancelled)
 {
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 2000; // 2 seconds
 
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++)
+    {
+        try
+        {
+            if (attempt > 1)
+            {
+                const colors = require("./utils").colors;
+                console.log();
+                console.log(colors.cyan(`[INFO] Download attempt ${attempt}/${MAX_RETRIES}`));
+            }
+            await downloadOAttempt(answers, setCurrentProcess, isCancelled, attempt);
+            return; // Success, exit retry loop
+        } catch (error)
+        {
+            const colors = require("./utils").colors;
+            console.log();
+            console.log(colors.yellow(`[WARNING] Attempt ${attempt} failed: ${error.message}`));
+
+            if (attempt === MAX_RETRIES)
+            {
+                throw new Error(`Download failed after ${MAX_RETRIES} attempts: ${error.message}`);
+            }
+
+            if (isCancelled())
+            {
+                throw new Error("Download cancelled by user");
+            }
+
+            console.log(colors.cyan(`[INFO] Retrying in ${RETRY_DELAY / 1000} seconds...`));
+            console.log();
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        }
+    }
+}
+
+async function downloadOAttempt(answers, setCurrentProcess, isCancelled, attempt)
+{
     try
     {
         const url = answers.url;
@@ -78,7 +139,9 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
         let finalOutputPath = outputPath;
         const origFilename = filename;
         let fileIndex = 1;
-        if (existsSync(finalOutputPath))
+
+        // Only show file exists prompt on first attempt
+        if (attempt === 1 && existsSync(finalOutputPath))
         {
             const stats = statSync(finalOutputPath);
             const fileSize = (stats.size / (1024 * 1024)).toFixed(2);
@@ -101,7 +164,9 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
             ]);
             if (action === "skip")
             {
+                console.log();
                 console.log(colors.yellow("Skipping download as requested."));
+                console.log();
                 return null;
             }
             if (action === "newname")
@@ -116,6 +181,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                 } while (existsSync(finalOutputPath));
                 console.log();
                 console.log(colors.yellow(`\n Downloading as: ${filename}`));
+                console.log();
             }
         }
 
@@ -127,6 +193,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                 return parseFloat(stdout.trim());
             } catch (error)
             {
+                console.log();
                 console.log(colors.yellow(`[WARNING] Could not determine video duration: ${error.message}`));
                 return null;
             }
@@ -161,28 +228,6 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
 
         const throttledBar = new ThrottledProgressBar(progressBar, 3000);
 
-        // Cross-platform process kill helper
-        function killProcessTree(proc)
-        {
-            if (!proc || proc.killed) {return;}
-            const pid = proc.pid;
-            if (process.platform === 'win32')
-            {
-                // Use taskkill to kill process tree
-                require('child_process').execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
-            } else
-            {
-                // POSIX: kill process group
-                try
-                {
-                    process.kill(-pid, 'SIGKILL');
-                } catch (e)
-                {
-                    try { proc.kill('SIGKILL'); } catch (e2) { }
-                }
-            }
-        }
-
         let cancelHandled = false;
         return new Promise((resolve, reject) =>
         {
@@ -190,21 +235,32 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
             let lastUpdateTime = startTime;
             let totalBytes = 0;
             let lastPercentValue = 0;
+            let hasStartedDownload = false;
+
             throttledBar.start(100, 0, {
                 eta: "Calculating...",
                 speed: "0 KB/s"
             });
 
             const spawnOpts = process.platform !== 'win32' ? { detached: true } : {};
-            const ffmpeg = spawn("ffmpeg", [
+            const ffmpegArgs = [
                 "-i", url,
+                "-reconnect", "1",
+                "-reconnect_at_eof", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-timeout", "30000000",
+                "-multiple_requests", "1",
+                "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 ...(answers.downloadType && answers.downloadType === "audio-only" ? ["-vn", "-acodec", "copy"] : ["-c", "copy"]),
                 "-progress", "pipe:2",
                 "-nostats",
                 "-loglevel", "error",
                 "-y",
                 finalOutputPath
-            ], spawnOpts);
+            ];
+
+            const ffmpeg = spawn("ffmpeg", ffmpegArgs, spawnOpts);
 
             setCurrentProcess({
                 proc: ffmpeg,
@@ -230,15 +286,21 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     killProcessTree(ffmpeg);
                     return;
                 }
+
                 buffer += data.toString();
                 const lines = buffer.split(/\r?\n/);
                 buffer = lines.pop();
+
                 for (const line of lines)
                 {
                     const [key, value] = line.split("=");
                     if (key && value !== undefined)
                     {
                         progressData[key.trim()] = value.trim();
+                        if (key.trim() === "progress" && value.trim() === "continue")
+                        {
+                            hasStartedDownload = true;
+                        }
                     }
                 }
 
@@ -299,6 +361,7 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     percentage: 100
                 });
                 throttledBar.stop();
+
                 if (cancelHandled)
                 {
                     return reject(new Error("Download operation was cancelled by user"));
@@ -310,7 +373,11 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
                     resolve();
                 } else
                 {
-                    reject(new Error(`FFmpeg process failed with exit code ${code}`));
+                    // Provide more specific error information for retry logic
+                    const errorMsg = hasStartedDownload
+                        ? `Download interrupted (exit code ${code})`
+                        : `Failed to start download (exit code ${code})`;
+                    reject(new Error(errorMsg));
                 }
             });
 
@@ -329,7 +396,44 @@ async function downloadO(answers, setCurrentProcess, isCancelled)
 
 async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelled)
 {
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 2000;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++)
+    {
+        try
+        {
+            if (attempt > 1)
+            {
+                const colors = require("./utils").colors;
+                console.log();
+                console.log(colors.cyan(`[INFO] Download attempt ${attempt}/${MAX_RETRIES}`));
+            }
+            await downloadYAttempt(answers, setCurrentProcess, setProgressBars, isCancelled, attempt);
+            return;
+        } catch (error)
+        {
+            const colors = require("./utils").colors;
+            console.log();
+            console.log(colors.yellow(`[WARNING] Attempt ${attempt} failed: ${error.message}`));
 
+            if (attempt === MAX_RETRIES)
+            {
+                throw new Error(`Download failed after ${MAX_RETRIES} attempts: ${error.message}`);
+            }
+
+            if (isCancelled())
+            {
+                throw new Error("Download cancelled by user");
+            }
+console.log();
+            console.log(colors.cyan(`[INFO] Retrying in ${RETRY_DELAY / 1000} seconds...`));
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        }
+    }
+}
+
+async function downloadYAttempt(answers, setCurrentProcess, setProgressBars, isCancelled, attempt)
+{
     try
     {
         const { getFormatSelector } = require("./utils");
@@ -340,26 +444,33 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
         const { basename } = require("path");
         const colors = require("./utils").colors;
         const execAsync = require("util").promisify(require("child_process").exec);
+
         let outputFilename = null;
-        try
-        {
+        try {
             const { stdout } = await execAsync(`yt-dlp --get-filename --output \"%(title)s.%(ext)s\" \"${answers.url}\"`);
             outputFilename = stdout.trim();
-        } catch (e)
-        {
+        } catch (e) {}
 
-        }
         let finalOutputPath = null;
         let filename = null;
         let fileIndex = 1;
-        if (outputFilename)
-        {
+
+        if (outputFilename) {
             filename = outputFilename;
-            finalOutputPath = join(answers.output, filename);
-            if (existsSync(finalOutputPath))
-            {
+            // If audio-only, change extension to .mp3 for existence check
+            let checkPath = join(answers.output, filename);
+            let ext = filename.includes('.') ? filename.substring(filename.lastIndexOf('.')) : '';
+            const base = filename.replace(ext, '');
+            if (answers.downloadType === "audio-only") {
+                checkPath = join(answers.output, base + ".mp3");
+                ext = ".mp3";
+            }
+            finalOutputPath = checkPath;
+
+            if (attempt === 1 && existsSync(finalOutputPath)) {
                 const stats = statSync(finalOutputPath);
                 const fileSize = (stats.size / (1024 * 1024)).toFixed(2);
+                console.log();
                 console.log(colors.yellow(`\n File already exists: ${basename(finalOutputPath)}`));
                 console.log(colors.gray(`   Size: ${fileSize} MB`));
                 console.log(colors.gray(`   Modified: ${stats.mtime.toLocaleString()}`));
@@ -377,23 +488,21 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                         ]
                     }
                 ]);
-                if (action === "skip")
-                {
+                if (action === "skip") {
+                    console.log();
                     console.log(colors.yellow("Skipping download as requested."));
+                    console.log();
                     return null;
                 }
-                if (action === "newname")
-                {
-                    const ext = filename.includes('.') ? filename.substring(filename.lastIndexOf('.')) : '';
-                    const base = filename.replace(ext, '');
-                    do
-                    {
+                if (action === "newname") {
+                    do {
                         filename = `${base} (${fileIndex})${ext}`;
                         finalOutputPath = join(answers.output, filename);
                         fileIndex++;
                     } while (existsSync(finalOutputPath));
                     console.log();
                     console.log(colors.yellow(`\n Downloading as: ${filename}`));
+                    console.log();
                 }
             }
         }
@@ -416,37 +525,27 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
         const throttledBar = new ThrottledProgressBar(progressBar);
         setProgressBars({ stop: () => throttledBar.stop() });
 
-        const args = [
-            "--format", formatSelector,
-            "--output", finalOutputPath ? finalOutputPath : outputTemplate,
-            "--progress",
-            "--newline",
-            answers.url
-        ];
+const args = [
+    "--format", formatSelector,
+    "--output", finalOutputPath ? finalOutputPath : outputTemplate,
+    "--progress",
+    "--newline",
+    "--retries", "10",
+    "--fragment-retries", "10",
+    "--retry-sleep", "5",
+    "--socket-timeout", "30",
+    "--force-overwrites",
+    "--no-continue",
+    "--buffer-size", "16K",
+    "--http-chunk-size", "10M",
+    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "--throttled-rate", "100K",
+    answers.url
+];
 
         if (answers.downloadType === "audio-only")
         {
             args.push("--extract-audio", "--audio-format", "mp3");
-        }
-
-        // Cross-platform process kill helper
-        function killProcessTree(proc)
-        {
-            if (!proc || proc.killed) {return;}
-            const pid = proc.pid;
-            if (process.platform === 'win32')
-            {
-                require('child_process').execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
-            } else
-            {
-                try
-                {
-                    process.kill(-pid, 'SIGKILL');
-                } catch (e)
-                {
-                    try { proc.kill('SIGKILL'); } catch (e2) { }
-                }
-            }
         }
 
         let cancelHandled = false;
@@ -469,6 +568,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
             let currentPhase = answers.downloadType === "audio-only" ? "audio" : "video";
             let buffer = "";
             let lastProgress = -1;
+            let hasStartedDownload = false;
 
             throttledBar.start(100, 0, {
                 phase: currentPhase,
@@ -492,13 +592,19 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
 
                 for (const line of lines)
                 {
-                    if (!line.trim()) {continue;}
+                    if (!line.trim()) { continue; }
+
+                    if (line.includes("[download]") && !hasStartedDownload)
+                    {
+                        hasStartedDownload = true;
+                    }
 
                     if (line.includes("audio only") || line.includes(".m4a") || line.includes("Extracting audio"))
                     {
                         if (currentPhase !== "audio")
                         {
                             currentPhase = "audio";
+                            console.log();
                             console.log(colors.yellow("\n[INFO] Switching to audio processing phase"));
                         }
                     }
@@ -548,7 +654,10 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
             ytdlp.stderr.on("data", data =>
             {
                 const errorOutput = data.toString();
-                if (!errorOutput.includes("WARNING") && !errorOutput.includes("[download]"))
+                // Filter out routine warnings and progress messages
+                if (!errorOutput.includes("WARNING") &&
+                    !errorOutput.includes("[download]") &&
+                    !errorOutput.includes("Deleting original file"))
                 {
                     console.error(colors.red(`[ERROR] ${errorOutput.trim()}`));
                 }
@@ -579,7 +688,10 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
                     resolve();
                 } else
                 {
-                    reject(new Error(`yt-dlp process failed with exit code ${code}`));
+                    const errorMsg = hasStartedDownload
+                        ? `Download interrupted (exit code ${code})`
+                        : `Failed to start download (exit code ${code})`;
+                    reject(new Error(errorMsg));
                 }
             });
 
