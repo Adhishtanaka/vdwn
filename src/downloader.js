@@ -425,7 +425,7 @@ async function downloadY(answers, setCurrentProcess, setProgressBars, isCancelle
             {
                 throw new Error("Download cancelled by user");
             }
-console.log();
+            console.log();
             console.log(colors.cyan(`[INFO] Retrying in ${RETRY_DELAY / 1000} seconds...`));
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
         }
@@ -446,28 +446,32 @@ async function downloadYAttempt(answers, setCurrentProcess, setProgressBars, isC
         const execAsync = require("util").promisify(require("child_process").exec);
 
         let outputFilename = null;
-        try {
+        try
+        {
             const { stdout } = await execAsync(`yt-dlp --get-filename --output \"%(title)s.%(ext)s\" \"${answers.url}\"`);
             outputFilename = stdout.trim();
-        } catch (e) {}
+        } catch (e) { }
 
         let finalOutputPath = null;
         let filename = null;
         let fileIndex = 1;
 
-        if (outputFilename) {
+        if (outputFilename)
+        {
             filename = outputFilename;
             // If audio-only, change extension to .mp3 for existence check
             let checkPath = join(answers.output, filename);
             let ext = filename.includes('.') ? filename.substring(filename.lastIndexOf('.')) : '';
             const base = filename.replace(ext, '');
-            if (answers.downloadType === "audio-only") {
+            if (answers.downloadType === "audio-only")
+            {
                 checkPath = join(answers.output, base + ".mp3");
                 ext = ".mp3";
             }
             finalOutputPath = checkPath;
 
-            if (attempt === 1 && existsSync(finalOutputPath)) {
+            if (attempt === 1 && existsSync(finalOutputPath))
+            {
                 const stats = statSync(finalOutputPath);
                 const fileSize = (stats.size / (1024 * 1024)).toFixed(2);
                 console.log();
@@ -488,14 +492,17 @@ async function downloadYAttempt(answers, setCurrentProcess, setProgressBars, isC
                         ]
                     }
                 ]);
-                if (action === "skip") {
+                if (action === "skip")
+                {
                     console.log();
                     console.log(colors.yellow("Skipping download as requested."));
                     console.log();
                     return null;
                 }
-                if (action === "newname") {
-                    do {
+                if (action === "newname")
+                {
+                    do
+                    {
                         filename = `${base} (${fileIndex})${ext}`;
                         finalOutputPath = join(answers.output, filename);
                         fileIndex++;
@@ -525,23 +532,23 @@ async function downloadYAttempt(answers, setCurrentProcess, setProgressBars, isC
         const throttledBar = new ThrottledProgressBar(progressBar);
         setProgressBars({ stop: () => throttledBar.stop() });
 
-const args = [
-    "--format", formatSelector,
-    "--output", finalOutputPath ? finalOutputPath : outputTemplate,
-    "--progress",
-    "--newline",
-    "--retries", "10",
-    "--fragment-retries", "10",
-    "--retry-sleep", "5",
-    "--socket-timeout", "30",
-    "--force-overwrites",
-    "--no-continue",
-    "--buffer-size", "16K",
-    "--http-chunk-size", "10M",
-    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "--throttled-rate", "100K",
-    answers.url
-];
+        const args = [
+            "--format", formatSelector,
+            "--output", finalOutputPath ? finalOutputPath : outputTemplate,
+            "--progress",
+            "--newline",
+            "--retries", "10",
+            "--fragment-retries", "10",
+            "--retry-sleep", "5",
+            "--socket-timeout", "30",
+            "--force-overwrites",
+            "--no-continue",
+            "--buffer-size", "16K",
+            "--http-chunk-size", "10M",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "--throttled-rate", "100K",
+            answers.url
+        ];
 
         if (answers.downloadType === "audio-only")
         {
