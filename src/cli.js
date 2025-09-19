@@ -1,6 +1,8 @@
 const inquirer = require("inquirer");
 const { colors, isYouTube, ensureOutputDirectory, isValidYouTubeMediaUrl, parseYouTubeUrl } = require("./utils");
 const { downloadY, downloadO } = require("./downloader");
+const fs = require("fs");
+const path = require("path");
 
 let currentDownloadProcess = null;
 let isCancelled = false;
@@ -115,6 +117,21 @@ function cancelDownload()
 
 async function downloadLoop()
 {
+    const argv = process.argv.slice(2);
+    if (argv.includes("--version") || argv.includes("-v"))
+    {
+        try
+        {
+            const mainDir = path.dirname(require.main && require.main.filename ? require.main.filename : process.cwd());
+            const pkgPath = path.resolve(mainDir, "package.json");
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            console.log(pkg.version);
+        } catch
+        {
+            console.error("Could not read version info.");
+        }
+        process.exit(0);
+    }
     while (true)
     {
         try
